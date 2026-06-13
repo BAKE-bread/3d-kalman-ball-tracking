@@ -2,9 +2,11 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 
-const root = document.getElementById('root')!;
-createRoot(root).render(
+const rootEl = document.getElementById('root');
+if (!rootEl) throw new Error('[KalmanTracker] #root element not found in DOM');
+
+createRoot(rootEl).render(
   <React.StrictMode>
     <App />
-  </React.StrictMode>
+  </React.StrictMode>,
 );

@@ -1,237 +1,382 @@
 // ============================================================
-// App.tsx  — Root layout assembler
-// Wires together: canvas, sidebar, metrics bar, chart panel.
+// App.tsx — Root layout assembler  (V1.2.0)
+//
+// Layout structure:
+//   ┌────────────────── Header (48px) ──────────────────────┐
+//   │ Logo  │  StatusPill  │  [Start/Pause] [Reset] [Kick]  │
+//   │       │              │  [Randomise]   [›Panel]         │
+//   ├──────────────── Main row ──────────────────────────────┤
+//   │                              │  Sidebar (282px)        │
+//   │   3D Canvas (flex-1)         │  ┌ Tab bar ─────────┐  │
+//   │                              │  │ Physics Sensor    │  │
+//   │   [Legend overlay]           │  │ Filter  About     │  │
+//   │                              │  └──────────────────┘  │
+//   │   [Metric cards — bottom]    │  Panel content          │
+//   │                              │                         │
+//   ├─────── Chart panel (130px) ──│  Velocity footer        │
+//   │  [RMSE] [Cov]    frame count │                         │
+//   └──────────────────────────────┴─────────────────────────┘
 // ============================================================
 
 import React, { useRef, useState } from 'react';
-import { useSimulationLoop } from '@/hooks/useSimulationLoop';
-import { useSimStore } from '@/store/simulationStore';
-import { Slider } from '@/components/ui/Slider';
-import { Button, Toggle, MetricCard, StatusPill, Tab } from '@/components/ui/Controls';
-import { PhysicsPanel } from '@/components/panels/PhysicsPanel';
-import { SensorPanel } from '@/components/panels/SensorPanel';
-import { KalmanPanel } from '@/components/panels/KalmanPanel';
-import { AboutPanel } from '@/components/panels/AboutPanel';
+import { useSimulationLoop }  from '@/hooks/useSimulationLoop';
+import { useSimStore }        from '@/store/simulationStore';
+import { Button, MetricCard, StatusPill, Tab } from '@/components/ui/Controls';
+import { PhysicsPanel }  from '@/components/panels/PhysicsPanel';
+import { SensorPanel }   from '@/components/panels/SensorPanel';
+import { KalmanPanel }   from '@/components/panels/KalmanPanel';
+import { AboutPanel }    from '@/components/panels/AboutPanel';
 import { RmseChart, CovarianceChart } from '@/components/overlays/RmseChart';
 
-// Inline SVG icons (no external icon dep required at runtime)
-const IconPlay = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>;
-const IconPause = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>;
-const IconReset = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.5"/></svg>;
-const IconDice = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="3"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/><circle cx="16" cy="16" r="1.5" fill="currentColor"/><circle cx="16" cy="8" r="1.5" fill="currentColor"/><circle cx="8" cy="16" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>;
+// ── Inline SVG icon set ───────────────────────────────────────
+const IconPlay      = () => <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>;
+const IconPause     = () => <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>;
+const IconReset     = () => <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.5"/></svg>;
+const IconDice      = () => <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="2" y="2" width="20" height="20" rx="3"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/><circle cx="16" cy="16" r="1.5" fill="currentColor"/><circle cx="16" cy="8" r="1.5" fill="currentColor"/><circle cx="8" cy="16" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>;
+const IconKick      = () => <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5,12 12,5 19,12"/></svg>;
+const IconChevronL  = () => <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>;
+const IconChevronR  = () => <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>;
 
 const PANEL_TABS = [
   { id: 'physics' as const, label: 'Physics', icon: '⚙' },
-  { id: 'sensor' as const, label: 'Sensor', icon: '📡' },
-  { id: 'kalman' as const, label: 'Filter', icon: '∿' },
-  { id: 'about' as const, label: 'About', icon: '?' },
-];
+  { id: 'sensor'  as const, label: 'Sensor',  icon: '📡' },
+  { id: 'kalman'  as const, label: 'Filter',  icon: '∿' },
+  { id: 'about'   as const, label: 'About',   icon: '?' },
+] as const;
+
+const LEGEND_ITEMS = [
+  { color: '#22c55e', label: 'True State',       glow: true  },
+  { color: '#06b6d4', label: 'Kalman Estimate',  glow: true  },
+  { color: '#f43f5e', label: 'Sensor Reading',   glow: false },
+  { color: '#f97316', label: 'Outlier Spike',    glow: false },
+  { color: '#f59e0b', label: 'Forecast (1 s)',   glow: false },
+] as const;
 
 export const App: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { handleStart, handlePause, handleReset, handleRandomise } = useSimulationLoop(canvasRef);
-  const { status, metrics, activePanel, setActivePanel, sidebarOpen, setSidebarOpen } = useSimStore();
+
+  const {
+    status, metrics,
+    activePanel, setActivePanel,
+    sidebarOpen, setSidebarOpen,
+    requestKick,
+  } = useSimStore();
+
   const [chartTab, setChartTab] = useState<'rmse' | 'cov'>('rmse');
 
+  const isActive = status === 'running' || status === 'paused';
   const isRunning = status === 'running';
-  const isPaused = status === 'paused';
-  const hasData = metrics != null;
+  const hasData   = metrics != null;
 
   return (
     <div style={{
       display: 'flex', flexDirection: 'column',
-      height: '100vh', background: '#0b1426',
-      fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
+      height: '100vh',
+      background: '#060d1a',
+      fontFamily: '"Inter","SF Pro Display",system-ui,sans-serif',
       overflow: 'hidden',
+      color: '#e2e8f0',
     }}>
-      {/* ── Top bar ─────────────────────────────────────── */}
+
+      {/* ══ GLOBAL STYLES ════════════════════════════════════ */}
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; overflow: hidden; background: #060d1a; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 2px; }
+        ::-webkit-scrollbar-thumb:hover { background: #2d4a6e; }
+        canvas { user-select: none; -webkit-user-select: none; }
+
+        @keyframes kfPulse {
+          0%, 100% { opacity: 1;   box-shadow: 0 0 6px currentColor; }
+          50%       { opacity: 0.4; box-shadow: 0 0 2px currentColor; }
+        }
+
+        /* Chart container subtle gradient border */
+        .kf-chart-panel {
+          background: linear-gradient(180deg, #060d1a 0%, #060d1a 100%);
+          border-top: 1px solid #1a3050;
+        }
+
+        /* Metric card hover lift */
+        .kf-metric:hover {
+          border-color: var(--kf-accent, #2d4a6e) !important;
+          transform: translateY(-1px);
+          transition: transform 0.15s, border-color 0.15s;
+        }
+
+        /* Sidebar panel scroll */
+        .kf-panel-scroll {
+          scrollbar-gutter: stable;
+        }
+
+        /* Button active press */
+        button:active:not(:disabled) { transform: scale(0.97); }
+      `}</style>
+
+      {/* ══ HEADER ═══════════════════════════════════════════ */}
       <header style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 20px', height: 52, flexShrink: 0,
-        background: '#0f172a', borderBottom: '1px solid #1e3a5f',
-        boxShadow: '0 1px 0 #1e3a5f',
+        padding: '0 18px',
+        height: 50,
+        flexShrink: 0,
+        background: '#0b1730',
+        borderBottom: '1px solid #1a3050',
+        boxShadow: '0 1px 12px rgba(0,0,0,0.4)',
+        zIndex: 10,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {/* ── Logo ─── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
           <div style={{
-            width: 28, height: 28, borderRadius: 6,
-            background: 'linear-gradient(135deg, #0ea5e9, #06b6d4)',
+            width: 30, height: 30, borderRadius: 7,
+            background: 'linear-gradient(135deg, #0ea5e9 0%, #06b6d4 100%)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 14, boxShadow: '0 0 10px rgba(6,182,212,0.4)',
-          }}>∿</div>
+            fontSize: 16, fontWeight: 700, color: '#fff',
+            boxShadow: '0 0 14px rgba(6,182,212,0.45)',
+            flexShrink: 0,
+          }}>
+            ∿
+          </div>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.01em' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: '-0.015em', color: '#e2e8f0', lineHeight: 1.2 }}>
               KalmanTracker 3D
             </div>
-            <div style={{ fontSize: 10, color: '#475569' }}>
+            <div style={{ fontSize: 9.5, color: '#3b5c87', letterSpacing: '0.02em' }}>
               Real-time 6-DOF State Estimation · WebGL
             </div>
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {/* ── Controls ─── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
           <StatusPill status={status} />
 
-          {/* Control buttons */}
-          <div style={{ display: 'flex', gap: 6 }}>
-            {!isRunning && !isPaused ? (
-              <Button variant="primary" onClick={handleStart} icon={<IconPlay />}>
-                Start
-              </Button>
-            ) : (
-              <Button variant="primary" onClick={handlePause} icon={isRunning ? <IconPause /> : <IconPlay />}>
-                {isRunning ? 'Pause' : 'Resume'}
-              </Button>
-            )}
-            <Button variant="secondary" onClick={handleReset} icon={<IconReset />}>Reset</Button>
-            <Button variant="ghost" onClick={handleRandomise} icon={<IconDice />} disabled={!isRunning}>
-              Randomise
-            </Button>
-          </div>
+          {/* Divider */}
+          <div style={{ width: 1, height: 22, background: '#1e3a5f', margin: '0 2px' }} />
 
+          {/* Primary flow: Start / Pause+Resume */}
+          {!isActive ? (
+            <Button variant="primary" onClick={handleStart} icon={<IconPlay />}>
+              Start
+            </Button>
+          ) : (
+            <Button variant="primary" onClick={handlePause} icon={isRunning ? <IconPause /> : <IconPlay />}>
+              {isRunning ? 'Pause' : 'Resume'}
+            </Button>
+          )}
+
+          {/* Secondary actions */}
+          <Button variant="secondary" onClick={handleReset} icon={<IconReset />}>
+            Reset
+          </Button>
+
+          {/* Divider */}
+          <div style={{ width: 1, height: 22, background: '#1e3a5f', margin: '0 1px' }} />
+
+          {/* Kick — separated visually from reset/start because it's a physics action */}
+          <Button
+            variant="kick"
+            onClick={requestKick}
+            disabled={!isRunning}
+            icon={<IconKick />}
+            title="Apply a strong upward impulse to re-energise the ball"
+          >
+            Kick
+          </Button>
+
+          <Button
+            variant="ghost"
+            onClick={handleRandomise}
+            disabled={!isRunning}
+            icon={<IconDice />}
+            title="Randomise ball velocity direction"
+          >
+            Randomise
+          </Button>
+
+          {/* Divider */}
+          <div style={{ width: 1, height: 22, background: '#1e3a5f', margin: '0 1px' }} />
+
+          {/* Sidebar toggle */}
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
+            title={sidebarOpen ? 'Hide panel' : 'Show panel'}
             style={{
-              marginLeft: 4, background: 'transparent', border: '1px solid #1e3a5f',
-              color: '#64748b', borderRadius: 5, padding: '5px 8px', cursor: 'pointer',
-              fontSize: 12,
+              display: 'flex', alignItems: 'center', gap: 4,
+              background: sidebarOpen ? '#162840' : 'transparent',
+              border: '1px solid #1e3a5f',
+              color: sidebarOpen ? '#94a3b8' : '#475569',
+              borderRadius: 6,
+              padding: '5px 8px',
+              cursor: 'pointer',
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: '0.04em',
+              textTransform: 'uppercase',
+              transition: 'background 0.15s, color 0.15s',
             }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#2d4a6e'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#1e3a5f'; }}
           >
-            {sidebarOpen ? '‹ Hide' : '› Panel'}
+            {sidebarOpen ? <IconChevronR /> : <IconChevronL />}
+            {sidebarOpen ? 'Hide' : 'Panel'}
           </button>
         </div>
       </header>
 
-      {/* ── Main area ───────────────────────────────────── */}
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      {/* ══ MAIN ROW ═════════════════════════════════════════ */}
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
 
-        {/* ── 3D Viewport ──────────────────────────────── */}
+        {/* ── VIEWPORT COLUMN ──────────────────────────────── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minWidth: 0 }}>
 
-          {/* Canvas */}
+          {/* 3D Canvas — takes all remaining vertical space */}
           <canvas
             ref={canvasRef}
-            style={{ flex: 1, display: 'block', width: '100%', cursor: 'grab' }}
+            style={{ flex: 1, display: 'block', width: '100%', minHeight: 0, cursor: 'grab' }}
           />
 
-          {/* Viewport overlay — legend */}
+          {/* ── Legend overlay (top-left) ── */}
           <div style={{
             position: 'absolute', top: 12, left: 12,
             display: 'flex', flexDirection: 'column', gap: 5,
+            pointerEvents: 'none',
           }}>
-            {[
-              { color: '#22c55e', label: 'True State' },
-              { color: '#06b6d4', label: 'Kalman Estimate' },
-              { color: '#f43f5e', label: 'Sensor Reading' },
-              { color: '#f59e0b', label: 'Forecast (1s)' },
-            ].map(({ color, label }) => (
-              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <div style={{ width: 8, height: 8, borderRadius: '50%', background: color, boxShadow: `0 0 5px ${color}88` }} />
-                <span style={{ fontSize: 10, color: '#64748b' }}>{label}</span>
-              </div>
-            ))}
+            <div style={{
+              background: 'rgba(6,13,26,0.72)',
+              backdropFilter: 'blur(6px)',
+              border: '1px solid #1a3050',
+              borderRadius: 7,
+              padding: '7px 10px',
+              display: 'flex', flexDirection: 'column', gap: 5,
+            }}>
+              {LEGEND_ITEMS.map(({ color, label, glow }) => (
+                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <div style={{
+                    width: 8, height: 8, borderRadius: '50%',
+                    background: color,
+                    boxShadow: glow ? `0 0 6px ${color}aa` : 'none',
+                    flexShrink: 0,
+                  }} />
+                  <span style={{ fontSize: 10, color: '#64748b', whiteSpace: 'nowrap' }}>{label}</span>
+                </div>
+              ))}
+            </div>
           </div>
 
-          {/* Viewport hint */}
+          {/* ── Idle state overlay ── */}
           {status === 'idle' && (
             <div style={{
-              position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              position: 'absolute', inset: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
               pointerEvents: 'none',
             }}>
               <div style={{
-                background: 'rgba(15,23,42,0.9)', border: '1px solid #1e3a5f',
-                borderRadius: 10, padding: '16px 24px', textAlign: 'center',
+                background: 'rgba(6,13,26,0.88)',
+                border: '1px solid #1e3a5f',
+                borderRadius: 12,
+                padding: '22px 32px',
+                textAlign: 'center',
+                backdropFilter: 'blur(8px)',
               }}>
-                <div style={{ fontSize: 28, marginBottom: 6 }}>∿</div>
-                <div style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 14 }}>3D Kalman Filter Simulation</div>
-                <div style={{ color: '#475569', fontSize: 11, marginTop: 4 }}>Drag to orbit · Scroll to zoom · Press Start</div>
+                <div style={{ fontSize: 36, marginBottom: 8, lineHeight: 1, color: '#06b6d4', textShadow: '0 0 20px rgba(6,182,212,0.5)' }}>∿</div>
+                <div style={{ color: '#e2e8f0', fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
+                  3D Kalman Filter Simulation
+                </div>
+                <div style={{ color: '#3b5c87', fontSize: 11, lineHeight: 1.6 }}>
+                  Drag to orbit · Scroll to zoom<br />
+                  Press <strong style={{ color: '#06b6d4' }}>Start</strong> to begin
+                </div>
               </div>
             </div>
           )}
 
-          {/* Bottom chart panel */}
+          {/* ── Metric cards — floating above chart panel ── */}
           <div style={{
-            height: 140, borderTop: '1px solid #1e3a5f', background: '#0b1426',
-            padding: '8px 16px 6px',
+            position: 'absolute',
+            bottom: 138,   // chart panel height (130) + 8px gap
+            left: 10,
+            right: 10,
+            display: 'flex',
+            gap: 6,
+            flexWrap: 'wrap',
+            pointerEvents: 'none',
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <div style={{ display: 'flex', gap: 6 }}>
+            {[
+              { label: 'Kalman RMSE', value: hasData ? `${metrics.rmseKalman.toFixed(3)}m`  : '—', color: '#06b6d4', sub: 'Cumulative',       glow: true  },
+              { label: 'Sensor RMSE', value: hasData ? `${metrics.rmseSensor.toFixed(3)}m`  : '—', color: '#f43f5e', sub: 'Sensor frames',    glow: false },
+              { label: 'Current Err', value: hasData ? `${metrics.errorKalman.toFixed(3)}m` : '—', color: '#22c55e', sub: 'Instantaneous',    glow: false },
+              { label: 'tr(P)',       value: hasData ? metrics.covariance.toFixed(1)         : '—', color: '#a78bfa', sub: 'Uncertainty',      glow: false },
+            ].map(({ label, value, color, sub, glow }) => (
+              <div key={label} style={{ pointerEvents: 'all' }}>
+                <MetricCard label={label} value={value} color={color} sub={sub} dim={!hasData} glow={glow && hasData} />
+              </div>
+            ))}
+          </div>
+
+          {/* ── Chart panel ── */}
+          <div className="kf-chart-panel" style={{ height: 130, padding: '7px 14px 5px', flexShrink: 0 }}>
+            {/* Chart tab bar */}
+            <div style={{
+              display: 'flex', alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: 5,
+            }}>
+              <div style={{ display: 'flex', gap: 5 }}>
                 {(['rmse', 'cov'] as const).map((t) => (
                   <button
                     key={t}
                     onClick={() => setChartTab(t)}
                     style={{
-                      fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer',
-                      background: chartTab === t ? '#1e3a5f' : 'transparent',
-                      color: chartTab === t ? '#38bdf8' : '#475569',
-                      border: chartTab === t ? '1px solid #2d4a6e' : '1px solid transparent',
-                      textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.04em',
+                      fontSize: 9.5, padding: '2px 9px', borderRadius: 4,
+                      cursor: 'pointer', fontWeight: 700,
+                      textTransform: 'uppercase', letterSpacing: '0.05em',
+                      background:    chartTab === t ? '#162840' : 'transparent',
+                      color:         chartTab === t ? '#38bdf8' : '#334155',
+                      border:        chartTab === t ? '1px solid #2d4a6e' : '1px solid transparent',
+                      transition: 'all 0.15s',
                     }}
                   >
                     {t === 'rmse' ? 'RMSE Error' : 'Covariance tr(P)'}
                   </button>
                 ))}
               </div>
-              {hasData && (
-                <div style={{ fontSize: 10, color: '#334155' }}>
-                  Frame {metrics.frame.toLocaleString()}
-                </div>
-              )}
+              <div style={{ fontSize: 9.5, color: '#1e3a5f', fontFamily: 'monospace' }}>
+                {hasData && `F ${metrics.frame.toLocaleString()}`}
+              </div>
             </div>
-            {chartTab === 'rmse' ? <RmseChart /> : <CovarianceChart />}
-          </div>
 
-          {/* Floating metric bar */}
-          <div style={{
-            position: 'absolute', bottom: 158, left: 0, right: 0,
-            padding: '0 12px',
-            display: 'flex', gap: 8,
-            pointerEvents: 'none',
-          }}>
-            <div style={{ pointerEvents: 'all', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <MetricCard
-                label="Kalman RMSE"
-                value={hasData ? `${metrics.rmseKalman.toFixed(3)}m` : '—'}
-                sub="Cumulative"
-                color="#06b6d4"
-                dim={!hasData}
-              />
-              <MetricCard
-                label="Sensor RMSE"
-                value={hasData ? `${metrics.rmseSensor.toFixed(3)}m` : '—'}
-                sub="Sensor frames only"
-                color="#f43f5e"
-                dim={!hasData}
-              />
-              <MetricCard
-                label="Current Error"
-                value={hasData ? `${metrics.errorKalman.toFixed(3)}m` : '—'}
-                sub="Instantaneous 3D dist"
-                color="#22c55e"
-                dim={!hasData}
-              />
-              <MetricCard
-                label="tr(P)"
-                value={hasData ? metrics.covariance.toFixed(2) : '—'}
-                sub="Filter uncertainty"
-                color="#a78bfa"
-                dim={!hasData}
-              />
+            {/* Chart */}
+            <div style={{ height: 90 }}>
+              {chartTab === 'rmse' ? <RmseChart /> : <CovarianceChart />}
             </div>
           </div>
         </div>
 
-        {/* ── Sidebar ──────────────────────────────────── */}
+        {/* ══ SIDEBAR ══════════════════════════════════════════ */}
         {sidebarOpen && (
           <aside style={{
-            width: 280, flexShrink: 0,
-            background: '#0f172a', borderLeft: '1px solid #1e3a5f',
-            display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            width: 282,
+            flexShrink: 0,
+            background: '#0b1730',
+            borderLeft: '1px solid #1a3050',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            boxShadow: '-4px 0 16px rgba(0,0,0,0.25)',
           }}>
-            {/* Tab bar */}
+
+            {/* ── Tab bar ── */}
             <div style={{
-              display: 'flex', gap: 4, padding: '8px 10px 0',
-              borderBottom: '1px solid #1e3a5f', flexShrink: 0,
-              flexWrap: 'wrap',
+              display: 'flex',
+              gap: 3,
+              padding: '8px 8px 0',
+              borderBottom: '1px solid #1a3050',
+              flexShrink: 0,
+              background: '#080f1f',
             }}>
               {PANEL_TABS.map((t) => (
                 <Tab
@@ -244,53 +389,60 @@ export const App: React.FC = () => {
               ))}
             </div>
 
-            {/* Panel content */}
-            <div style={{ flex: 1, overflow: 'auto', padding: '14px 14px 20px' }}>
+            {/* ── Panel content ── */}
+            <div
+              className="kf-panel-scroll"
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                padding: '13px 13px 20px',
+              }}
+            >
               {activePanel === 'physics' && <PhysicsPanel />}
-              {activePanel === 'sensor' && <SensorPanel />}
-              {activePanel === 'kalman' && <KalmanPanel />}
-              {activePanel === 'about' && <AboutPanel />}
+              {activePanel === 'sensor'  && <SensorPanel />}
+              {activePanel === 'kalman'  && <KalmanPanel />}
+              {activePanel === 'about'   && <AboutPanel />}
             </div>
 
-            {/* Sidebar footer — velocity readout */}
-            {hasData && (
+            {/* ── Velocity footer ── */}
+            <div style={{
+              borderTop: '1px solid #1a3050',
+              padding: '8px 13px 10px',
+              flexShrink: 0,
+              background: '#080f1f',
+            }}>
               <div style={{
-                borderTop: '1px solid #1e3a5f', padding: '8px 14px',
-                flexShrink: 0, background: '#0b1426',
+                fontSize: 9, color: '#1e3a5f',
+                textTransform: 'uppercase', letterSpacing: '0.08em',
+                marginBottom: 5, fontWeight: 700,
               }}>
-                <div style={{ fontSize: 10, color: '#334155', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                  Estimated Velocity
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  {(['X', 'Y', 'Z'] as const).map((axis, i) => (
-                    <div key={axis} style={{ flex: 1, textAlign: 'center' }}>
-                      <div style={{ fontSize: 9, color: '#475569' }}>{axis}</div>
-                      <div style={{ fontSize: 11, fontFamily: 'monospace', color: '#64748b' }}>
-                        {metrics.kalmanVelocity[i].toFixed(1)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                Estimated Velocity (m/s)
               </div>
-            )}
+              <div style={{ display: 'flex', gap: 6 }}>
+                {(['X', 'Y', 'Z'] as const).map((axis, i) => (
+                  <div key={axis} style={{
+                    flex: 1, textAlign: 'center',
+                    background: '#0d1f35',
+                    border: '1px solid #1e3a5f',
+                    borderRadius: 5,
+                    padding: '5px 4px',
+                  }}>
+                    <div style={{ fontSize: 9, color: '#334155', marginBottom: 2, fontWeight: 600 }}>{axis}</div>
+                    <div style={{
+                      fontSize: 12,
+                      fontFamily: '"JetBrains Mono","Fira Mono",monospace',
+                      color: hasData ? '#64748b' : '#1e3a5f',
+                      letterSpacing: '-0.02em',
+                    }}>
+                      {hasData ? metrics.kalmanVelocity[i].toFixed(1) : '—'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </aside>
         )}
       </div>
-
-      {/* Global styles */}
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { overflow: hidden; background: #0b1426; }
-        ::-webkit-scrollbar { width: 5px; }
-        ::-webkit-scrollbar-track { background: #0b1426; }
-        ::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 3px; }
-        canvas { user-select: none; -webkit-user-select: none; }
-        @keyframes pulse {
-          0%, 100% { opacity: 1; box-shadow: 0 0 5px currentColor; }
-          50% { opacity: 0.5; box-shadow: 0 0 2px currentColor; }
-        }
-      `}</style>
     </div>
   );
 };

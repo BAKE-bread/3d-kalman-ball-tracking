@@ -6,26 +6,29 @@
 
 import {
   zeros, identity, matMul, transpose, matAdd, matSub, trace,
-  invert3x3
+  invert3x3,
 } from '@/utils/matrix';
-import type { Vec3, Vec6, Mat6x6, KalmanConfig, KalmanState, IFilterPlugin, PhysicsConfig } from '@/types';
+import type {
+  Vec3, Vec6, Mat6x6,
+  KalmanConfig, KalmanState, IFilterPlugin, PhysicsConfig,
+} from '@/types';
 
 export class KalmanFilter3D implements IFilterPlugin {
   readonly name = 'Linear Kalman Filter (6-DOF)';
 
-  /** State vector: [x, y, z, vx, vy, vz] */
-  public X: number[];
-  /** State covariance 6×6 */
-  public P: Mat6x6;
+  public X: number[];   // state vector [x,y,z,vx,vy,vz]
+  public P: Mat6x6;     // state covariance 6×6
 
-  private Q: Mat6x6;           // process noise
-  private R: number[][];        // measurement noise 3×3
-  private F: Mat6x6;            // state transition
-  private H: number[][];        // observation 3×6
-  private B: number[][];        // control matrix 6×3
-  private U: number[];          // control input [0,0,-g]
+  private Q: Mat6x6;
+  private R: number[][];
+  private F: Mat6x6;
+  private H: number[][];
+  private B: number[][];
+  private U: number[];
 
   private config: KalmanConfig;
+  /** Frames remaining for kick-hint Q inflation */
+  private _kickInflateFrames = 0;
 
   constructor(config: KalmanConfig) {
     this.config = config;
@@ -42,29 +45,39 @@ export class KalmanFilter3D implements IFilterPlugin {
 
   // ── Public API ──────────────────────────────────────────────
 
-  /** (Re)initialise all matrices when physics config changes */
   public configure(physics: PhysicsConfig, kalman: KalmanConfig): void {
     this.config = kalman;
     this._buildStaticMatrices(physics.dt, physics.gravity, kalman.qNominal, kalman.rVariance);
   }
 
-  /** Hard-set ball state (used on simulation reset) */
   public reset(pos: Vec3, vel: Vec3): void {
     this.X = [...pos, ...vel];
     this.P = identity(6);
-    for (let i = 0; i < 6; i++) this.P[i][i] = 100; // high initial uncertainty
+    for (let i = 0; i < 6; i++) this.P[i][i] = 100;
+    this._kickInflateFrames = 0;
   }
 
   /**
-   * Prediction step: propagate state forward one dt.
-   * hitWall triggers adaptive Q inflation to handle
-   * the instantaneous velocity reversal at boundaries.
+   * Notify the filter that an external impulse was applied to the ball.
+   * Inflates Q for several frames so the filter rapidly re-tracks.
    */
-  public predict(physics: PhysicsConfig, hitWall = false): void {
-    // Update F/B/U for current physics config (handles live dt changes)
-    this._buildStaticMatrices(physics.dt, physics.gravity, this.config.qNominal, this.config.rVariance);
+  public applyKickHint(frames = 10): void {
+    this._kickInflateFrames = frames;
+  }
 
-    const qVal = hitWall ? this.config.qCollision : this.config.qNominal;
+  public predict(physics: PhysicsConfig, hitWall = false): void {
+    this._buildStaticMatrices(
+      physics.dt, physics.gravity,
+      this.config.qNominal, this.config.rVariance,
+    );
+
+    let qVal = this.config.qNominal;
+    if (hitWall) {
+      qVal = this.config.qCollision;
+    } else if (this._kickInflateFrames > 0) {
+      qVal = this.config.qCollision; // same large Q for kick re-acquisition
+      this._kickInflateFrames--;
+    }
     this._setQDiagonal(qVal);
 
     // X_k = F * X_{k-1} + B * U
@@ -78,40 +91,27 @@ export class KalmanFilter3D implements IFilterPlugin {
     this.X = newX;
 
     // P_k = F * P_{k-1} * F^T + Q
-    const FP = matMul(this.F, this.P);
-    const Ft = transpose(this.F);
-    const FPFt = matMul(FP, Ft);
+    const FP   = matMul(this.F, this.P);
+    const FPFt = matMul(FP, transpose(this.F));
     this.P = matAdd(FPFt, this.Q);
   }
 
-  /**
-   * Update step: incorporate a 3D position measurement.
-   * Silently skips if S is singular (measurement arrives during divergence).
-   */
   public update(z: Vec3): void {
-    // Innovation: y = z - H * X
-    const Hx = [this.X[0], this.X[1], this.X[2]];
-    const y = [z[0] - Hx[0], z[1] - Hx[1], z[2] - Hx[2]];
+    const y = [z[0] - this.X[0], z[1] - this.X[1], z[2] - this.X[2]];
 
-    // S = H * P * H^T + R  (H selects top-3 rows/cols → S[i][j] = P[i][j] + R[i][j])
+    // S = H*P*H^T + R  (H picks top-3 rows → S[i][j] = P[i][j] + R[i][j])
     const S: number[][] = [[0,0,0],[0,0,0],[0,0,0]];
     for (let i = 0; i < 3; i++)
       for (let j = 0; j < 3; j++)
         S[i][j] = this.P[i][j] + this.R[i][j];
 
     const invS = invert3x3(S);
-    if (!invS) return; // singular — skip this measurement
+    if (!invS) return;
 
-    // K = P * H^T * S^{-1}  (H^T: top-3 cols of identity → K = first 3 cols of P * invS)
-    const Pt = transpose(this.P);
-    const PHt: number[][] = Pt.slice(0, 3).map((_, j) =>
-      this.P.map(row => row[j])
-    ).slice(0, 3);
-
-    // PHt is 6×3: PHt[i][j] = P[i][j] for j<3
+    // K = P * H^T * S^{-1}
     const K: number[][] = Array.from({ length: 6 }, (_, i) =>
       [0, 1, 2].map(j =>
-        [0, 1, 2].reduce((s, k) => s + this.P[i][k] * invS[k][j], 0)
+        [0, 1, 2].reduce((s, k) => s + this.P[i][k] * invS[k][j], 0),
       )
     );
 
@@ -119,18 +119,15 @@ export class KalmanFilter3D implements IFilterPlugin {
     for (let i = 0; i < 6; i++)
       this.X[i] += K[i][0] * y[0] + K[i][1] * y[1] + K[i][2] * y[2];
 
-    // P = (I - K*H) * P  — using Joseph form for numerical stability
-    // KH[i][j] = K[i][0]*H[0][j] + ... ≈ K[i][j] for j<3, else 0
+    // P = (I - K*H) * P
     const KH: Mat6x6 = zeros(6);
     for (let i = 0; i < 6; i++)
       for (let j = 0; j < 3; j++)
         KH[i][j] = K[i][j];
 
-    const IminusKH: Mat6x6 = matSub(identity(6), KH);
-    this.P = matMul(IminusKH, this.P);
+    this.P = matMul(matSub(identity(6), KH), this.P);
   }
 
-  /** Snapshot of current filter state (immutable copy) */
   public getState(): KalmanState {
     return {
       X: [...this.X] as Vec6,
@@ -138,12 +135,10 @@ export class KalmanFilter3D implements IFilterPlugin {
     };
   }
 
-  /** Scalar uncertainty proxy = trace(P) */
   public getUncertainty(): number {
     return trace(this.P);
   }
 
-  /** Mahalanobis distance of innovation (used for χ² outlier detection) */
   public mahalanobis(z: Vec3): number {
     const y = [z[0] - this.X[0], z[1] - this.X[1], z[2] - this.X[2]];
     const S: number[][] = [[0,0,0],[0,0,0],[0,0,0]];
@@ -162,7 +157,6 @@ export class KalmanFilter3D implements IFilterPlugin {
   // ── Private helpers ─────────────────────────────────────────
 
   private _buildStaticMatrices(dt: number, g: number, qVal: number, rVal: number): void {
-    // State transition matrix
     this.F = [
       [1, 0, 0, dt, 0,  0 ],
       [0, 1, 0,  0, dt, 0 ],
@@ -171,7 +165,7 @@ export class KalmanFilter3D implements IFilterPlugin {
       [0, 0, 0,  0, 1,  0 ],
       [0, 0, 0,  0, 0,  1 ],
     ];
-    // Control matrix (gravity acts on z)
+    // Gravity acts on Z axis (index 2)
     this.B = [
       [0, 0, 0],
       [0, 0, 0],
@@ -181,14 +175,12 @@ export class KalmanFilter3D implements IFilterPlugin {
       [0, 0, dt],
     ];
     this.U = [0, 0, -g];
-    // Observation matrix (position only)
     this.H = [
       [1, 0, 0, 0, 0, 0],
       [0, 1, 0, 0, 0, 0],
       [0, 0, 1, 0, 0, 0],
     ];
     this._setQDiagonal(qVal);
-    // Measurement noise R (diagonal)
     for (let i = 0; i < 3; i++)
       for (let j = 0; j < 3; j++)
         this.R[i][j] = i === j ? rVal : 0;
